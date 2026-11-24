@@ -1,18 +1,77 @@
-# 🐛 Reto de Depuración (Bug Hunting): API Taller Mecánico
+Bug Hunting: API Taller Mecánico por Steban Solano
 
-Este repositorio contiene una API construida con **FastAPI** y **SQLAlchemy Asíncrono**, pero presenta **10 errores críticos** de lógica, asincronía, validación e integridad referencial.
+Este README documenta los 10 bugs encontrados y cómo se corrigieron.
 
-## Flujo de trabajo obligatorio (Git & GitHub)
-1. Haz un **Fork** de este repositorio a tu cuenta personal de GitHub.
-2. Clona tu fork localmente, crea tu entorno virtual (`venv`) e instala `requirements.txt`.
-3. Crea tu archivo `.env` basándote en `.env.example`.
-4. Encuentra y corrige los **10 bugs** del sistema.
-5. **Regla de Git:** Debes realizar **al menos 1 commit descriptivo por cada bug solucionado** (ej. `fix: agregar await en db.delete para eliminar ordenes`). No se aceptan entregas con un único commit gigante.
+La documentación interactiva queda en http://localhost:8000/docs.
+<p align="center">
+  <img src="https://media.tenor.com/YsjgzSRMrpwAAAAM/fish.gif" width="600">
+</p>
 
-## Pruebas que debe superar tu API antes de entregar
-- [ ] Al arrancar Uvicorn, las 3 tablas (`ordenes`, `mecanicos`, `repuestos`) deben crearse en SQLite.
-- [ ] Crear un mecánico y desactivarlo con `DELETE /mecanicos/{id}` debe ocultarlo de `GET /mecanicos`, manteniendo el registro en BD con `activo = 0`.
-- [ ] Intentar crear una orden asignada a un mecánico inexistente o desactivado debe devolver HTTP `400`.
-- [ ] `GET /ordenes` debe devolver la lista de órdenes con los datos anidados de su mecánico sin bucles infinitos ni errores asíncronos.
-- [ ] `PATCH /ordenes/{id}` enviando solo `{"estado": "Reparada"}` no debe borrar la `falla_reportada` ni el `costo_reparacion` existentes.
-- [ ] `DELETE /ordenes/{id}` debe eliminar físicamente el registro de la base de datos.
+1. GET /ordenes/ devolvía un dict en vez de una lista
+Archivo: routers/ordenes.py
+El response_model era List[OrdenResponse] pero se devolvía {"total": ..., "ordenes": ...}, lo que producía un error de validación.
+-Antes
+return {"total": len(ordenes), "ordenes": ordenes}
+-Después
+return resultado.scalars().all()
+
+2. PATCH /ordenes/{id} pisaba campos con None
+Archivo: routers/ordenes.py
+model_dump() incluye los campos que el cliente no envió (como None), así que se borraban datos existentes.
+-Antes
+datos = orden_patch.model_dump()
+-Después
+datos = orden_patch.model_dump(exclude_unset=True)
+
+3. DELETE /ordenes/{id} no borraba nada
+Archivo: routers/ordenes.py
+En AsyncSession, delete() es una corrutina y faltaba el await.
+-Antes
+db.delete(orden_db)
+-Después
+await db.delete(orden_db)
+
+4. DELETE /mecanicos/{id} no guardaba el cambio
+Archivo: routers/mecanicos.py
+Se asignaba activo = False pero nunca se hacía commit.
+-Antes
+mecanico.activo = False
+return None
+-Después
+mecanico.activo = False
+await db.commit()
+return None
+
+5. OrdenResponse no podía leer objetos de SQLAlchemy
+Archivo: schemas/schemas.py
+le faltaba la configuración para validar desde atributos de objetos ORM.
+model_config = {"from_attributes": True}
+
+6. Referencia circular entre schemas
+Archivo: schemas/schemas.py
+MecanicoResponse contenía List[OrdenResponse] y OrdenResponse contenía MecanicoResponse, lo que genera recursión infinita. Se rompió el ciclo con schemas simples (MecanicoSimple y OrdenSimple) que no se anidan entre sí.
+
+7. Lazy loading en async (MissingGreenlet)
+Archivos: routers/ordenes.py y routers/mecanicos.py
+Las relaciones mecanico y ordenes no se cargan solas en SQLAlchemy async, y al serializar la respuesta fallaba.
+En los GET y en el PATCH: select(...).options(selectinload(...)).
+En los POST: await db.refresh(obj, attribute_names=["relacion"]).
+
+8. El modelo Repuesto no se importaba en main.py
+Archivo: main.py
+Sin el import, el modelo no se registra en Base.metadata y create_all nunca crea la tabla repuestos.
+from models.repuesto import Repuesto
+
+9. POST /ordenes/ no validaba el mecánico
+Archivo: routers/ordenes.py
+Se podían crear órdenes con un mecanico_id inexistente o de un mecánico desactivado (SQLite no valida llaves foráneas por defecto). Ahora ambos casos devuelven HTTP 400.
+if not mecanico:
+    raise HTTPException(status_code=400, detail="El mecánico no existe")
+if not mecanico.activo:
+    raise HTTPException(status_code=400, detail="El mecánico no está activo")
+
+10. GET /mecanicos/ listaba mecánicos desactivados
+Archivo: routers/mecanicos.py
+El borrado es lógico, o sea que cuando se borra un mecánico no se elimina de verdad de la base de datos, solo se le pone activo = False para desactivarlo.
+Pero el problema era que el listado de mecánicos traía a todos, sin fijarse si estaban activos o no. Entonces los mecánicos que ya estaban desactivados seguían apareciendo como si nada.
+La corrección fue hacer que el GET solo traiga los mecánicos que tienen activo = True, así los desactivados quedan ocultos del listado pero siguen guardados en la base de datos con su activo = 0.

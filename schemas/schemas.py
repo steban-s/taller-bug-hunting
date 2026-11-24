@@ -1,6 +1,22 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
+class MecanicoSimple(BaseModel):
+    id: int
+    nombre_completo: str
+    especialidad: str
+    activo: bool
+
+    model_config = {"from_attributes": True}
+
+class OrdenSimple(BaseModel):
+    id: int
+    placa: str
+    modelo: str
+    estado: str
+
+    model_config = {"from_attributes": True}
+
 class MecanicoCreate(BaseModel):
     nombre_completo: str
     especialidad: str
@@ -8,7 +24,7 @@ class MecanicoCreate(BaseModel):
 class MecanicoResponse(MecanicoCreate):
     id: int
     activo: bool
-    ordenes: List["OrdenResponse"] = []
+    ordenes: List[OrdenSimple] = []
 
     model_config = {"from_attributes": True}
 
@@ -27,4 +43,6 @@ class OrdenResponse(OrdenCreate):
     id: int
     estado: str
     costo_reparacion: float
-    mecanico: Optional[MecanicoResponse] = None
+    mecanico: Optional[MecanicoSimple] = None
+
+    model_config = {"from_attributes": True}

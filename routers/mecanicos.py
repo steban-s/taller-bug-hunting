@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 from typing import List
 
 from core.database import obtener_bd
@@ -14,12 +15,16 @@ async def crear_mecanico(mecanico: MecanicoCreate, db: AsyncSession = Depends(ob
     nuevo = MecanicoModel(**mecanico.model_dump())
     db.add(nuevo)
     await db.commit()
-    await db.refresh(nuevo)
+    await db.refresh(nuevo, attribute_names=["ordenes"])
     return nuevo
 
 @router.get("/", response_model=List[MecanicoResponse])
 async def listar_mecanicos(db: AsyncSession = Depends(obtener_bd)):
-    resultado = await db.execute(select(MecanicoModel))
+    resultado = await db.execute(
+        select(MecanicoModel)
+        .where(MecanicoModel.activo.is_(True))
+        .options(selectinload(MecanicoModel.ordenes))
+    )
     return resultado.scalars().all()
 
 @router.delete("/{mecanico_id}", status_code=204)
@@ -30,4 +35,5 @@ async def desactivar_mecanico(mecanico_id: int, db: AsyncSession = Depends(obten
         raise HTTPException(status_code=404, detail="Mecánico no encontrado")
 
     mecanico.activo = False
+    await db.commit()
     return None
